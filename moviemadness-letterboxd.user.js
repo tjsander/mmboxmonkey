@@ -93,10 +93,19 @@
     // Parse MovieMadness search results HTML
     // -------------------------------------------------------------------------
 
+    // MM location strings concatenate section + subsection without a separator:
+    // "Leviathans & BehemothsGODZILLA" → "Leviathans & Behemoths > GODZILLA"
+    // The boundary is always a lowercase letter immediately followed by an uppercase one.
+    function formatLocation(loc) {
+        return loc.replace(/([a-z])([A-Z])/, '$1 > $2');
+    }
+
+    // Returns { formats: Set<string>, location: string|null }
     function parseSearchResults(html, title, year) {
         const parser = new DOMParser();
         const doc    = parser.parseFromString(html, 'text/html');
         const found  = new Set();
+        let location = null;
 
         // MM titles are in headings like:
         //   "HELLRAISER (BLU-RAY)"
@@ -107,10 +116,11 @@
             const text = el.textContent.trim();
             if (!text) return;
 
-            // If the title has a year and this element has a different year, skip it.
+            // If both sides have a year, allow ±1 tolerance — databases often
+            // disagree by one year for films with late or multi-country releases.
             if (year) {
                 const elYear = text.match(/\((\d{4})\)/)?.[1];
-                if (elYear && elYear !== year) return;
+                if (elYear && Math.abs(Number(elYear) - Number(year)) > 1) return;
             }
 
             if (!titlesMatch(title, text)) return;
@@ -118,16 +128,39 @@
             FORMAT_PATTERNS.forEach(({ re, label }) => {
                 if (re.test(text)) found.add(label);
             });
+
+            // Extract location from the card container of the first match.
+            if (location !== null) return;
+            const card = el.closest('article, section, li') ?? el.parentElement?.parentElement ?? el.parentElement;
+            if (!card) return;
+
+            // Look for an element whose text starts with "MM LOCATION"
+            for (const child of card.querySelectorAll('*')) {
+                const t = child.textContent.trim();
+                if (!t.startsWith('MM LOCATION')) continue;
+
+                // Value may be in the same element after the label, or in a sibling.
+                const inlineMatch = t.match(/MM LOCATION[:\s]+(.+)/);
+                if (inlineMatch) {
+                    location = formatLocation(inlineMatch[1].trim());
+                    break;
+                }
+                const next = child.nextElementSibling;
+                if (next) {
+                    location = formatLocation(next.textContent.trim());
+                    break;
+                }
+            }
         });
 
-        return found;
+        return { formats: found, location };
     }
 
     // -------------------------------------------------------------------------
     // Build the UI widget
     // -------------------------------------------------------------------------
 
-    function buildWidget(formats, searchUrl) {
+    function buildWidget(formats, location, searchUrl) {
         const widget = document.createElement('section');
         widget.id = 'mm-availability';
         widget.style.cssText = [
@@ -191,6 +224,13 @@
             });
 
             widget.appendChild(row);
+
+            if (location) {
+                const loc = document.createElement('p');
+                loc.textContent = location;
+                loc.style.cssText = 'margin:0.5em 0 0; font-size:0.85em; color:#678;';
+                widget.appendChild(loc);
+            }
         }
 
         return widget;
@@ -200,23 +240,36 @@
     // Inject widget into Letterboxd page
     // -------------------------------------------------------------------------
 
-    // Waits for `selector` to appear in the DOM, then calls `cb` with the element.
-    // Gives up after ~10 seconds.
-    function waitForElement(selector, cb) {
-        const existing = document.querySelector(selector);
+    // Watches for `primary` selector to appear via MutationObserver.
+    // If it hasn't appeared after `timeoutMs`, falls back to the first match
+    // in `fallbacks`. Calls `cb` with whichever element is found.
+    function waitForElement(primary, fallbacks, timeoutMs, cb) {
+        const existing = document.querySelector(primary);
         if (existing) { cb(existing); return; }
 
-        let attempts = 0;
+        let done = false;
+
         const observer = new MutationObserver(() => {
-            const el = document.querySelector(selector);
+            if (done) return;
+            const el = document.querySelector(primary);
             if (el) {
+                done = true;
                 observer.disconnect();
+                clearTimeout(timer);
                 cb(el);
-            } else if (++attempts > 200) {
-                observer.disconnect();
             }
         });
         observer.observe(document.body, { childList: true, subtree: true });
+
+        const timer = setTimeout(() => {
+            if (done) return;
+            done = true;
+            observer.disconnect();
+            for (const sel of fallbacks) {
+                const el = document.querySelector(sel);
+                if (el) { cb(el); return; }
+            }
+        }, timeoutMs);
     }
 
     // -------------------------------------------------------------------------
@@ -244,8 +297,8 @@
             url:    searchUrl,
             onload(response) {
                 try {
-                    const formats = parseSearchResults(response.responseText, title, year);
-                    fetchedWidget = buildWidget(formats, searchUrl);
+                    const { formats, location } = parseSearchResults(response.responseText, title, year);
+                    fetchedWidget = buildWidget(formats, location, searchUrl);
                 } catch (e) {
                     fetchedWidget = null;
                 }
@@ -256,8 +309,10 @@
             },
         });
 
-        // Wait for the watch panel section to appear, then inject
-        waitForElement('#watch > section', el => {
+        // #watch > section exists when streaming options are listed.
+        // For films with no streaming options it never appears, so fall back
+        // to #watch or section.watch-panel after a 5-second timeout.
+        waitForElement('#watch > section', ['#watch', 'section.watch-panel'], 5000, el => {
             anchor = el;
             tryInject();
         });
