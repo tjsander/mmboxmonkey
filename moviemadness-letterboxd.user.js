@@ -19,7 +19,7 @@
 
     const FORMAT_ORDER = ['4K UHD', 'Blu-Ray', 'DVD', 'VHS'];
 
-    // Patterns to detect format from title strings like "HELLRAISER (BLU-RAY)" or "JENNIFER'S BODY (BLU RAY)"
+    // MM title strings use e.g. "(BLU RAY)" and "(BLU-RAY)" interchangeably.
     const FORMAT_PATTERNS = [
         { re: /\(4K\s*UHD(?:[\s-]?BLU[\s-]?RAY)?\)/i, label: '4K UHD' },
         { re: /\(BLU[\s-]?RAY\)/i,                     label: 'Blu-Ray' },
@@ -33,10 +33,6 @@
         'DVD':     '#67c267',
         'VHS':     '#c8a84b',
     };
-
-    // -------------------------------------------------------------------------
-    // Title helpers
-    // -------------------------------------------------------------------------
 
     function getFilmInfo() {
         let title = null;
@@ -57,30 +53,26 @@
         if (!title) {
             title = document.querySelector('h1')?.textContent.trim() ?? null;
         }
-
         if (!year) {
-            const yearLink = document.querySelector('a[href*="/films/year/"]');
-            year = yearLink?.textContent.trim() ?? null;
+            year = document.querySelector('a[href*="/films/year/"]')?.textContent.trim() ?? null;
         }
 
         return { title, year };
     }
 
-    // Normalise to bare lowercase words for fuzzy matching.
-    // Handles MovieMadness "TITLE, THE" <-> Letterboxd "The Title" convention.
+    // Handles MM "TITLE, THE" <-> Letterboxd "The Title" convention.
     function normalizeForMatch(str) {
         return str
             .toLowerCase()
-            .replace(/,\s*(the|a|an)\s*$/i, '') // strip trailing article ("GODFATHER, THE")
-            .replace(/^(the|a|an)\s+/i, '')      // strip leading article  ("The Godfather")
+            .replace(/,\s*(the|a|an)\s*$/i, '')
+            .replace(/^(the|a|an)\s+/i, '')
             .replace(/[^a-z0-9\s]/g, '')
             .replace(/\s+/g, ' ')
             .trim();
     }
 
-    // Strip all parenthetical content from an MM title string.
-    // MM titles are like "HELLRAISER (BLU-RAY)" or "JENNIFER'S BODY (UNRATED)(DVD)"
-    // or occasionally "GODFATHER, THE (1972) (DVD)" — all of it gets stripped.
+    // MM titles embed format and edition in parens: "HELLRAISER (BLU-RAY)",
+    // "JENNIFER'S BODY (UNRATED)(DVD)", "GODFATHER, THE (1972) (DVD)".
     function mmTitleBase(mmTitle) {
         return mmTitle.replace(/\s*\([^)]*\)/g, '').trim();
     }
@@ -89,13 +81,8 @@
         return normalizeForMatch(searchTitle) === normalizeForMatch(mmTitleBase(mmTitle));
     }
 
-    // -------------------------------------------------------------------------
-    // Parse MovieMadness search results HTML
-    // -------------------------------------------------------------------------
-
     // MM location strings concatenate section + subsection without a separator:
     // "Leviathans & BehemothsGODZILLA" → "Leviathans & Behemoths > GODZILLA"
-    // The boundary is always a lowercase letter immediately followed by an uppercase one.
     function formatLocation(loc) {
         return loc.replace(/([a-z])([A-Z])/, '$1 > $2');
     }
@@ -107,17 +94,12 @@
         const found  = new Set();
         let location = null;
 
-        // MM titles are in headings like:
-        //   "HELLRAISER (BLU-RAY)"
-        //   "JENNIFER'S BODY (UNRATED)(DVD)"
-        //   "GODFATHER, THE (1972) (DVD)"
-        // We strip all parentheticals to get the base title, then match.
         doc.querySelectorAll('h1, h2, h3, h4, h5').forEach(el => {
             const text = el.textContent.trim();
             if (!text) return;
 
-            // If both sides have a year, allow ±1 tolerance — databases often
-            // disagree by one year for films with late or multi-country releases.
+            // Allow ±1 year tolerance — databases often disagree for films with
+            // late or multi-country releases (e.g. Casablanca: 1942 vs 1943).
             if (year) {
                 const elYear = text.match(/\((\d{4})\)/)?.[1];
                 if (elYear && Math.abs(Number(elYear) - Number(year)) > 1) return;
@@ -129,63 +111,55 @@
                 if (re.test(text)) found.add(label);
             });
 
-            // Extract location from the card container of the first match.
             if (location !== null) return;
-            const card = el.closest('article, section, li') ?? el.parentElement?.parentElement ?? el.parentElement;
+            const card = el.parentElement?.closest('article, section, li') ?? el.parentElement;
             if (!card) return;
 
-            // Look for an element whose text starts with "MM LOCATION"
             for (const child of card.querySelectorAll('*')) {
                 const t = child.textContent.trim();
                 if (!t.startsWith('MM LOCATION')) continue;
-
-                // Value may be in the same element after the label, or in a sibling.
                 const inlineMatch = t.match(/MM LOCATION[:\s]+(.+)/);
                 if (inlineMatch) {
                     location = formatLocation(inlineMatch[1].trim());
-                    break;
+                } else if (child.nextElementSibling) {
+                    location = formatLocation(child.nextElementSibling.textContent.trim());
                 }
-                const next = child.nextElementSibling;
-                if (next) {
-                    location = formatLocation(next.textContent.trim());
-                    break;
-                }
+                break;
             }
         });
 
         return { formats: found, location };
     }
 
-    // -------------------------------------------------------------------------
-    // Build the UI widget
-    // -------------------------------------------------------------------------
-
     function buildWidget(formats, location, searchUrl) {
+        const style = document.createElement('style');
+        style.textContent = '#mm-availability a.mm-badge:hover { opacity: 0.8; }';
+        document.head.appendChild(style);
+
         const widget = document.createElement('section');
         widget.id = 'mm-availability';
         widget.style.cssText = [
-            'margin: 1.2em 0',
-            'padding: 0.7em 1em',
-            'background: rgba(255,255,255,0.05)',
-            'border-left: 3px solid #e9b84a',
-            'border-radius: 3px',
-            'font-size: 0.85em',
-            'line-height: 1.4',
+            'margin:1.2em 0',
+            'padding:0.7em 1em',
+            'background:rgba(255,255,255,0.05)',
+            'border-left:3px solid #e9b84a',
+            'border-radius:3px',
+            'font-size:0.85em',
+            'line-height:1.4',
         ].join(';');
 
-        // Header row
         const header = document.createElement('p');
-        header.style.cssText = 'margin:0 0 0.5em; display:flex; align-items:center; gap:0.4em;';
+        header.style.cssText = 'margin:0 0 0.5em;display:flex;align-items:center;gap:0.4em;';
 
         const favicon = document.createElement('img');
         favicon.src    = `${MM_BASE}/wp-content/uploads/2024/09/cropped-MM-favicon-32x32.png`;
         favicon.width  = 16;
         favicon.height = 16;
-        favicon.style.cssText = 'display:block; flex-shrink:0;';
+        favicon.style.cssText = 'display:block;flex-shrink:0;';
 
         const mmLabel = document.createElement('span');
         mmLabel.textContent = 'Movie Madness';
-        mmLabel.style.cssText = 'color:#e9b84a; font-weight:600;';
+        mmLabel.style.cssText = 'color:#e9b84a;font-weight:600;';
 
         header.appendChild(favicon);
         header.appendChild(mmLabel);
@@ -193,21 +167,22 @@
 
         if (formats.size === 0) {
             const msg = document.createElement('p');
-            msg.style.cssText = 'margin:0; color:#567;';
+            msg.style.cssText = 'margin:0;color:#567;';
             msg.textContent = 'Not found in collection';
             widget.appendChild(msg);
         } else {
             const row = document.createElement('div');
-            row.style.cssText = 'display:flex; gap:0.4em; flex-wrap:wrap;';
+            row.style.cssText = 'display:flex;gap:0.4em;flex-wrap:wrap;';
 
             FORMAT_ORDER.forEach(fmt => {
                 if (!formats.has(fmt)) return;
                 const badge = document.createElement('a');
-                badge.href   = searchUrl;
-                badge.target = '_blank';
-                badge.rel    = 'noopener noreferrer';
+                badge.className = 'mm-badge';
+                badge.href      = searchUrl;
+                badge.target    = '_blank';
+                badge.rel       = 'noopener noreferrer';
                 badge.textContent = fmt;
-                badge.title  = `Rent ${fmt} at Movie Madness`;
+                badge.title     = `Rent ${fmt} at Movie Madness`;
                 badge.style.cssText = [
                     `background:${FORMAT_COLORS[fmt]}`,
                     'color:#fff',
@@ -218,8 +193,6 @@
                     'text-decoration:none',
                     'white-space:nowrap',
                 ].join(';');
-                badge.addEventListener('mouseover', () => { badge.style.opacity = '0.8'; });
-                badge.addEventListener('mouseout',  () => { badge.style.opacity = '1'; });
                 row.appendChild(badge);
             });
 
@@ -228,7 +201,7 @@
             if (location) {
                 const loc = document.createElement('p');
                 loc.textContent = location;
-                loc.style.cssText = 'margin:0.5em 0 0; font-size:0.85em; color:#678;';
+                loc.style.cssText = 'margin:0.5em 0 0;font-size:0.85em;color:#678;';
                 widget.appendChild(loc);
             }
         }
@@ -236,13 +209,9 @@
         return widget;
     }
 
-    // -------------------------------------------------------------------------
-    // Inject widget into Letterboxd page
-    // -------------------------------------------------------------------------
-
-    // Watches for `primary` selector to appear via MutationObserver.
-    // If it hasn't appeared after `timeoutMs`, falls back to the first match
-    // in `fallbacks`. Calls `cb` with whichever element is found.
+    // Watches for `primary` to appear in the DOM; falls back to the first match
+    // in `fallbacks` after `timeoutMs`. Only needed because the watch panel
+    // renders dynamically and may be empty for films with no streaming options.
     function waitForElement(primary, fallbacks, timeoutMs, cb) {
         const existing = document.querySelector(primary);
         if (existing) { cb(existing); return; }
@@ -272,17 +241,11 @@
         }, timeoutMs);
     }
 
-    // -------------------------------------------------------------------------
-    // Main
-    // -------------------------------------------------------------------------
-
     function run() {
         const { title, year } = getFilmInfo();
         if (!title) return;
 
         const searchUrl = `${MM_BASE}/search/?query=${encodeURIComponent(title)}`;
-
-        // Fetch MovieMadness in parallel while waiting for the DOM target
         let fetchedWidget = null;
         let anchor        = null;
 
@@ -291,7 +254,6 @@
             anchor.insertAdjacentElement('afterend', fetchedWidget);
         }
 
-        // Kick off the network request immediately
         GM_xmlhttpRequest({
             method: 'GET',
             url:    searchUrl,
@@ -304,14 +266,11 @@
                 }
                 tryInject();
             },
-            onerror() {
-                // nothing to inject
-            },
+            onerror() {},
         });
 
-        // #watch > section exists when streaming options are listed.
-        // For films with no streaming options it never appears, so fall back
-        // to #watch or section.watch-panel after a 5-second timeout.
+        // #watch > section exists when streaming options are listed; falls back
+        // to #watch or section.watch-panel for films with no streaming options.
         waitForElement('#watch > section', ['#watch', 'section.watch-panel'], 5000, el => {
             anchor = el;
             tryInject();
