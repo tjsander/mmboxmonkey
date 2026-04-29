@@ -60,15 +60,26 @@
         return { title, year };
     }
 
-    // Handles MM "TITLE, THE" <-> Letterboxd "The Title" convention.
+    // Databases disagree on Roman vs Arabic sequel numbers (e.g. "III" vs "3").
+    // Applied after lowercasing so we match on the lowercase forms.
+    const ROMAN_NUMERALS = [
+        [/\bxiii\b/g, '13'], [/\bxii\b/g, '12'], [/\bxi\b/g, '11'],
+        [/\bix\b/g,   '9'],  [/\bviii\b/g, '8'], [/\bvii\b/g, '7'],
+        [/\bvi\b/g,   '6'],  [/\biv\b/g,   '4'], [/\biii\b/g, '3'],
+        [/\bii\b/g,   '2'],  [/\bx\b/g,   '10'], [/\bv\b/g,   '5'],
+    ];
+
+    // Handles MM "TITLE, THE" <-> Letterboxd "The Title" convention,
+    // and Roman <-> Arabic numeral mismatches in sequel titles.
     function normalizeForMatch(str) {
-        return str
+        const s = str
             .toLowerCase()
             .replace(/,\s*(the|a|an)\s*$/i, '')
             .replace(/^(the|a|an)\s+/i, '')
             .replace(/[^a-z0-9\s]/g, '')
             .replace(/\s+/g, ' ')
             .trim();
+        return ROMAN_NUMERALS.reduce((acc, [re, n]) => acc.replace(re, n), s);
     }
 
     // MM titles embed format and edition in parens: "HELLRAISER (BLU-RAY)",
@@ -81,10 +92,20 @@
         return normalizeForMatch(searchTitle) === normalizeForMatch(mmTitleBase(mmTitle));
     }
 
+    // Prepare a title for use as a MovieMadness search query.
+    // Converts Roman numerals (III → 3) and strips punctuation that breaks
+    // MM search (colons cause zero results for e.g. "The Lost World: Jurassic Park").
+    function toSearchQuery(title) {
+        return ROMAN_NUMERALS
+            .reduce((acc, [re, n]) => acc.replace(new RegExp(re.source, 'gi'), n), title)
+            .replace(/[:'"""]/g, '')
+            .trim();
+    }
+
     // MM location strings concatenate section + subsection without a separator:
     // "Leviathans & BehemothsGODZILLA" → "Leviathans & Behemoths > GODZILLA"
     function formatLocation(loc) {
-        return loc.replace(/([a-z])([A-Z])/, '$1 > $2');
+        return loc.replace(/([a-z])([A-Z])/g, '$1 > $2');
     }
 
     // Returns { formats: Set<string>, location: string|null }
@@ -111,8 +132,22 @@
                 if (re.test(text)) found.add(label);
             });
 
-            if (location !== null) return;
             const card = el.parentElement?.closest('article, section, li') ?? el.parentElement;
+
+            // Some entries have no format in the heading (e.g. "JEEPERS CREEPERS 2
+            // (COLLECTORS EDITION)") — fall back to bare format badges in the card.
+            if (card) {
+                card.querySelectorAll('*').forEach(child => {
+                    if (child.children.length > 0) return;
+                    const t = child.textContent.trim();
+                    if (/^DVD$/i.test(t))           found.add('DVD');
+                    else if (/^VHS$/i.test(t))      found.add('VHS');
+                    else if (/^BLU[\s-]?RAY$/i.test(t)) found.add('Blu-Ray');
+                    else if (/^4K\s*UHD$/i.test(t)) found.add('4K UHD');
+                });
+            }
+
+            if (location !== null) return;
             if (!card) return;
 
             for (const child of card.querySelectorAll('*')) {
@@ -167,8 +202,14 @@
 
         if (formats.size === 0) {
             const msg = document.createElement('p');
-            msg.style.cssText = 'margin:0;color:#567;';
-            msg.textContent = 'Not found in collection';
+            msg.style.cssText = 'margin:0;';
+            const link = document.createElement('a');
+            link.href = searchUrl;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = 'Not found in collection';
+            link.style.cssText = 'color:#567;';
+            msg.appendChild(link);
             widget.appendChild(msg);
         } else {
             const row = document.createElement('div');
@@ -245,7 +286,7 @@
         const { title, year } = getFilmInfo();
         if (!title) return;
 
-        const searchUrl = `${MM_BASE}/search/?query=${encodeURIComponent(title)}`;
+        const searchUrl = `${MM_BASE}/search/?query=${encodeURIComponent(toSearchQuery(title))}`;
         let fetchedWidget = null;
         let anchor        = null;
 
