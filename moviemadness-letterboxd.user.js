@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         Movie Madness Availability for Letterboxd
 // @namespace    https://letterboxd.com
-// @version      1.0.0
+// @version      1.0.4
 // @description  Shows Movie Madness Portland rental availability on Letterboxd film pages
 // @author       Travis Sanders
 // @match        https://letterboxd.com/film/*
+// @match        https://letterboxd.com/*/film/*
 // @homepageURL  https://github.com/tjsander/mmboxmonkey
 // @downloadURL  https://github.com/tjsander/mmboxmonkey/raw/main/moviemadness-letterboxd.user.js
 // @updateURL    https://github.com/tjsander/mmboxmonkey/raw/main/moviemadness-letterboxd.user.js
@@ -35,27 +36,18 @@
     };
 
     function getFilmInfo() {
-        let title = null;
-        let year  = null;
+        let content = document.querySelector('meta[property="og:title"]')?.getAttribute('content') || '';
 
-        const ogTitle = document.querySelector('meta[property="og:title"]');
-        if (ogTitle) {
-            const content = ogTitle.getAttribute('content') || '';
-            const m = content.match(/^(.*?)\s*\((\d{4})\)\s*$/);
-            if (m) {
-                title = m[1].trim();
-                year  = m[2];
-            } else {
-                title = content.trim();
-            }
-        }
+        // User review pages have og:title like "Travis's review of Lynch/Oz (2022)".
+        const reviewOf = content.match(/\breview of (.+)$/i);
+        if (reviewOf) content = reviewOf[1];
 
-        if (!title) {
-            title = document.querySelector('h1')?.textContent.trim() ?? null;
-        }
-        if (!year) {
-            year = document.querySelector('a[href*="/films/year/"]')?.textContent.trim() ?? null;
-        }
+        const m = content.match(/^(.*?)\s*\((\d{4})\)\s*$/);
+        let title = m ? m[1].trim() : (content.trim() || null);
+        let year  = m ? m[2] : null;
+
+        if (!title) title = document.querySelector('h1')?.textContent.trim() ?? null;
+        if (!year)  year  = document.querySelector('a[href*="/films/year/"]')?.textContent.trim() ?? null;
 
         return { title, year };
     }
