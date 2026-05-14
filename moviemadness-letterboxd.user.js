@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Movie Madness Availability for Letterboxd
 // @namespace    https://letterboxd.com
-// @version      1.0.5
+// @version      1.0.6
 // @description  Shows Movie Madness Portland rental availability on Letterboxd film pages
 // @author       Travis Sanders
 // @match        https://letterboxd.com/film/*
