@@ -81,7 +81,11 @@
     }
 
     function titlesMatch(searchTitle, mmTitle) {
-        return normalizeForMatch(searchTitle) === normalizeForMatch(mmTitleBase(mmTitle));
+        const norm = normalizeForMatch(searchTitle);
+        const base = mmTitleBase(mmTitle);
+        if (normalizeForMatch(base) === norm) return true;
+        // MM appends "THE MOVIE" to stage-show adaptations (e.g. "MAMMA MIA! THE MOVIE").
+        return normalizeForMatch(base.replace(/\bthe movie\b\s*$/i, '').trim()) === norm;
     }
 
     // Prepare a title for use as a MovieMadness search query.
