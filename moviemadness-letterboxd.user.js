@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Movie Madness Availability for Letterboxd
 // @namespace    https://letterboxd.com
-// @version      1.0.6
+// @version      1.1.0
 // @description  Shows Movie Madness Portland rental availability on Letterboxd film pages
 // @author       Travis Sanders
 // @match        https://letterboxd.com/film/*
@@ -49,7 +49,55 @@
         if (!title) title = document.querySelector('h1')?.textContent.trim() ?? null;
         if (!year)  year  = document.querySelector('a[href*="/films/year/"]')?.textContent.trim() ?? null;
 
-        return { title, year };
+        return { title, year, directors: getDirectors() };
+    }
+
+    // MM writes people as "BARKER, CLIVE", sometimes with a "**" marker or a
+    // credit qualifier; Letterboxd writes "Clive Barker".
+    function normalizePerson(name) {
+        let n = name.toLowerCase().replace(/\*+/g, '').trim();
+        n = n.replace(/\s*\([^)]*\)/g, '').replace(/,\s*$/, '').trim();
+        const comma = n.indexOf(',');
+        if (comma !== -1) n = `${n.slice(comma + 1).trim()} ${n.slice(0, comma).trim()}`;
+        return n.replace(/[^a-z\s]/g, '').replace(/\s+/g, ' ').trim();
+    }
+
+    // The two sites abbreviate given names differently ("ANDERSON, P.T." vs
+    // "Paul Thomas Anderson"), so compare on surname plus first initial. Titles
+    // and years are already known to match by the time this is used, which keeps
+    // same-surname collisions from mattering in practice.
+    function personKey(name) {
+        const parts = normalizePerson(name).split(' ').filter(Boolean);
+        if (!parts.length) return '';
+        const last = parts.pop();
+        return `${last}|${parts.length ? parts[0][0] : ''}`;
+    }
+
+    // Letterboxd credits directors as /director/<slug> links (listed twice, as a
+    // full and a short label, so a Set dedupes). Falls back to the page's
+    // schema.org block, which is wrapped in CDATA comments.
+    // Returns a Set of personKey() values.
+    function getDirectors() {
+        const names = new Set();
+
+        document.querySelectorAll('a[href^="/director/"]').forEach(a => {
+            const key = personKey(a.textContent);
+            if (key) names.add(key);
+        });
+        if (names.size) return names;
+
+        for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+            try {
+                const data = JSON.parse(script.textContent.replace(/\/\*[\s\S]*?\*\//g, ''));
+                (data.director ?? []).forEach(d => {
+                    const key = personKey(d.name ?? '');
+                    if (key) names.add(key);
+                });
+            } catch (e) { /* not the block we're after */ }
+            if (names.size) break;
+        }
+
+        return names;
     }
 
     // Databases disagree on Roman vs Arabic sequel numbers (e.g. "III" vs "3").
@@ -104,10 +152,134 @@
         return loc.replace(/([a-z])([A-Z])/g, '$1 > $2');
     }
 
+    // MM's detail dialog lists crew as a flat run of spans:
+    // <span>Clive Barker</span><span>(Director), </span><span>Christopher Figg</span>...
+    // These names come from TMDB and are the most reliable signal MM exposes.
+    function crewDirectors(card) {
+        const out = [];
+        card.querySelectorAll('span').forEach(label => {
+            if (label.textContent.trim() !== 'Crew:') return;
+            const list = label.nextElementSibling;
+            if (!list) return;
+            const spans = [...list.querySelectorAll('span')];
+            spans.forEach((span, i) => {
+                if (i > 0 && /^\(Director\)/i.test(span.textContent.trim())) {
+                    out.push(spans[i - 1].textContent);
+                }
+            });
+        });
+        return out;
+    }
+
+    // MM's own catalog "Director:" field. Unlike the TMDB crew list it often
+    // credits the writer instead ("KING, STEPHEN (WRITTEN BY)"), so only trust
+    // it when the credit carries no qualifier.
+    function declaredDirector(card) {
+        for (const label of card.querySelectorAll('span')) {
+            if (label.textContent.trim() !== 'Director:') continue;
+            const holder = label.nextElementSibling;
+            if (!holder) continue;
+            const raw = holder.textContent.replace(/\*+/g, '').trim();
+            return raw.includes('(') ? null : raw;
+        }
+        return null;
+    }
+
+    // MM puts the year either in the title ("BLOB, THE (1988) (DVD)") or in a
+    // badge on the card. Edition parens never hold a bare 4-digit number.
+    function cardYear(card, mmTitle) {
+        const inTitle = mmTitle.match(/\((\d{4})\)/);
+        if (inTitle) return Number(inTitle[1]);
+        for (const el of card.querySelectorAll('span')) {
+            const t = el.textContent.trim();
+            if (/^(?:19|20)\d{2}$/.test(t)) return Number(t);
+        }
+        return null;
+    }
+
+    // MM's catalog is TMDB-sourced but exposes no TMDB or IMDb id anywhere, so
+    // identity has to be confirmed from the director credit. Tiers run from most
+    // to least reliable; entries carrying no director at all (~1 in 5 of the
+    // catalog is not TMDB-enriched) fall back to an exact year match.
+    function identityMatches(card, mmYear, film) {
+        if (!film.directors.size) return true;   // nothing to check against
+
+        const crew = crewDirectors(card).map(personKey).filter(Boolean);
+        if (crew.length) return crew.some(key => film.directors.has(key));
+
+        const declared = declaredDirector(card);
+        if (declared) {
+            const key = personKey(declared);
+            if (key) return film.directors.has(key);
+        }
+
+        return Boolean(film.year && mmYear && Number(film.year) === mmYear);
+    }
+
+    function collectFormats(card, mmTitle, found) {
+        FORMAT_PATTERNS.forEach(({ re, label }) => {
+            if (re.test(mmTitle)) found.add(label);
+        });
+
+        // Some entries have no format in the title (e.g. "JEEPERS CREEPERS 2
+        // (COLLECTORS EDITION)") — fall back to bare format badges in the card.
+        card.querySelectorAll('*').forEach(child => {
+            if (child.children.length > 0) return;
+            const t = child.textContent.trim();
+            if (/^DVD$/i.test(t))               found.add('DVD');
+            else if (/^VHS$/i.test(t))          found.add('VHS');
+            else if (/^BLU[\s-]?RAY$/i.test(t)) found.add('Blu-Ray');
+            else if (/^4K\s*UHD$/i.test(t))     found.add('4K UHD');
+        });
+    }
+
+    function cardLocation(card) {
+        for (const child of card.querySelectorAll('*')) {
+            const t = child.textContent.trim();
+            if (!t.startsWith('MM LOCATION')) continue;
+            const inlineMatch = t.match(/MM LOCATION[:\s]+(.+)/);
+            if (inlineMatch) return formatLocation(inlineMatch[1].trim());
+            if (child.nextElementSibling) {
+                return formatLocation(child.nextElementSibling.textContent.trim());
+            }
+            return null;
+        }
+        return null;
+    }
+
     // Returns { formats: Set<string>, location: string|null }
-    function parseSearchResults(html, title, year) {
+    function parseSearchResults(html, film) {
         const parser = new DOMParser();
         const doc    = parser.parseFromString(html, 'text/html');
+        const found  = new Set();
+        let location = null;
+
+        // Each result is one [data-mmdb-id] block holding the card and its
+        // detail dialog. If MM changes that markup, fall back to the older
+        // heading scan rather than silently reporting nothing.
+        const cards = doc.querySelectorAll('[data-mmdb-id]');
+        if (!cards.length) return parseSearchResultsByHeading(doc, film.title, film.year);
+
+        cards.forEach(card => {
+            const mmTitle = card.querySelector('h3')?.textContent.trim();
+            if (!mmTitle || !titlesMatch(film.title, mmTitle)) return;
+
+            // Allow ±1 year tolerance — databases often disagree for films with
+            // late or multi-country releases (e.g. Casablanca: 1942 vs 1943).
+            const mmYear = cardYear(card, mmTitle);
+            if (film.year && mmYear && Math.abs(mmYear - Number(film.year)) > 1) return;
+
+            if (!identityMatches(card, mmYear, film)) return;
+
+            collectFormats(card, mmTitle, found);
+            if (location === null) location = cardLocation(card);
+        });
+
+        return { formats: found, location };
+    }
+
+    // Legacy fallback: scan headings without identity verification.
+    function parseSearchResultsByHeading(doc, title, year) {
         const found  = new Set();
         let location = null;
 
@@ -279,10 +451,10 @@
     }
 
     function run() {
-        const { title, year } = getFilmInfo();
-        if (!title) return;
+        const film = getFilmInfo();
+        if (!film.title) return;
 
-        const searchUrl = `${MM_BASE}/search/?query=${encodeURIComponent(toSearchQuery(title))}`;
+        const searchUrl = `${MM_BASE}/search/?query=${encodeURIComponent(toSearchQuery(film.title))}`;
         let fetchedWidget = null;
         let anchor        = null;
 
@@ -296,7 +468,7 @@
             url:    searchUrl,
             onload(response) {
                 try {
-                    const { formats, location } = parseSearchResults(response.responseText, title, year);
+                    const { formats, location } = parseSearchResults(response.responseText, film);
                     fetchedWidget = buildWidget(formats, location, searchUrl);
                 } catch (e) {
                     fetchedWidget = null;
