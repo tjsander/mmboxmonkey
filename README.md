@@ -30,7 +30,7 @@ On each Letterboxd film page the script:
 3. Parses the server-rendered HTML into individual catalog entries, keeps the ones whose title, year, and director match the film you're viewing, then extracts format labels (`4K UHD`, `Blu-Ray`, `DVD`, `VHS`).
 4. Injects a small widget into the "Where to Watch" panel showing available formats as colored badges, each linking to the Movie Madness search results.
 
-Title matching handles common variations between the two sites — articles moved to the end (`GODFATHER, THE`), edition suffixes (`(UNRATED)`, `(ARROW)`), and inconsistent Blu-Ray spellings (`BLU RAY` vs `BLU-RAY`).
+Title matching handles common variations between the two sites — articles moved to the end (`GODFATHER, THE`), edition suffixes (`(UNRATED)`, `(ARROW)`), inconsistent Blu-Ray spellings (`BLU RAY` vs `BLU-RAY`), and sequel numbers Movie Madness adds ahead of a subtitle (`JAWS 4: THE REVENGE` for *Jaws: The Revenge*).
 
 ### Matching the right film
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Movie Madness Availability for Letterboxd
 // @namespace    https://letterboxd.com
-// @version      1.1.0
+// @version      1.1.1
 // @description  Shows Movie Madness Portland rental availability on Letterboxd film pages
 // @author       Travis Sanders
 // @match        https://letterboxd.com/film/*
@@ -128,12 +128,24 @@
         return mmTitle.replace(/\s*\([^)]*\)/g, '').trim();
     }
 
+    // MM numbers sequels that Letterboxd leaves unnumbered: "JAWS 4: THE REVENGE"
+    // vs "Jaws: The Revenge", "HELLRAISER 5: INFERNO" vs "Hellraiser: Inferno".
+    // The number is only dropped when it sits directly before the subtitle colon,
+    // so "JAWS 4" still won't match "Jaws".
+    function dropSequelNumber(base) {
+        return base.replace(/^(.+?)\s+\d+\s*:/, '$1:');
+    }
+
     function titlesMatch(searchTitle, mmTitle) {
         const norm = normalizeForMatch(searchTitle);
         const base = mmTitleBase(mmTitle);
-        if (normalizeForMatch(base) === norm) return true;
-        // MM appends "THE MOVIE" to stage-show adaptations (e.g. "MAMMA MIA! THE MOVIE").
-        return normalizeForMatch(base.replace(/\bthe movie\b\s*$/i, '').trim()) === norm;
+        const variants = [
+            base,
+            // MM appends "THE MOVIE" to stage-show adaptations (e.g. "MAMMA MIA! THE MOVIE").
+            base.replace(/\bthe movie\b\s*$/i, '').trim(),
+            dropSequelNumber(base),
+        ];
+        return variants.some(variant => normalizeForMatch(variant) === norm);
     }
 
     // Prepare a title for use as a MovieMadness search query.
