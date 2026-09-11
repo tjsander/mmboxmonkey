@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Movie Madness Availability for Letterboxd
 // @namespace    https://letterboxd.com
-// @version      1.1.1
+// @version      1.1.2
 // @description  Shows Movie Madness Portland rental availability on Letterboxd film pages
 // @author       Travis Sanders
 // @match        https://letterboxd.com/film/*
@@ -38,8 +38,9 @@
     function getFilmInfo() {
         let content = document.querySelector('meta[property="og:title"]')?.getAttribute('content') || '';
 
-        // User review pages have og:title like "Travis's review of Lynch/Oz (2022)".
-        const reviewOf = content.match(/\breview of (.+)$/i);
+        // User review pages have og:title like "Travis's review of Lynch/Oz (2022)";
+        // logs without review text read "A ★★★½ diary entry for Lifeforce (1985)".
+        const reviewOf = content.match(/\b(?:review of|diary entry for) (.+)$/i);
         if (reviewOf) content = reviewOf[1];
 
         const m = content.match(/^(.*?)\s*\((\d{4})\)\s*$/);
@@ -75,7 +76,8 @@
 
     // Letterboxd credits directors as /director/<slug> links (listed twice, as a
     // full and a short label, so a Set dedupes). Falls back to the page's
-    // schema.org block, which is wrapped in CDATA comments.
+    // schema.org block, which is wrapped in CDATA comments. Review pages have no
+    // director links and nest the film under itemReviewed.
     // Returns a Set of personKey() values.
     function getDirectors() {
         const names = new Set();
@@ -89,7 +91,7 @@
         for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
             try {
                 const data = JSON.parse(script.textContent.replace(/\/\*[\s\S]*?\*\//g, ''));
-                (data.director ?? []).forEach(d => {
+                (data.itemReviewed?.director ?? data.director ?? []).forEach(d => {
                     const key = personKey(d.name ?? '');
                     if (key) names.add(key);
                 });
