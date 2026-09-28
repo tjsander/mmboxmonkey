@@ -26,7 +26,7 @@ When you're browsing a film on Letterboxd, the script checks the Movie Madness c
 On each Letterboxd film page the script:
 
 1. Reads the film title, year, and director credits from the page's Open Graph metadata and crew links.
-2. Fetches `moviemadness.org/search/?query=<title>` via `GM_xmlhttpRequest`, bypassing CORS restrictions.
+2. Fetches `moviemadness.org/search/?query=<title>` via `GM_xmlhttpRequest`, bypassing CORS restrictions. Movie Madness returns 12 results per page, best title matches first, so the script keeps requesting the next page (`&offset=12`, `24`, …) while a page still contains title matches, up to five pages.
 3. Parses the server-rendered HTML into individual catalog entries, keeps the ones whose title, year, and director match the film you're viewing, then extracts format labels (`4K UHD`, `Blu-Ray`, `DVD`, `VHS`).
 4. Injects a small widget into the "Where to Watch" panel showing available formats as colored badges, each linking to the Movie Madness search results.
 

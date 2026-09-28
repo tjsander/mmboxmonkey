@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Movie Madness Availability for Letterboxd
 // @namespace    https://letterboxd.com
-// @version      1.1.2
+// @version      1.1.3
 // @description  Shows Movie Madness Portland rental availability on Letterboxd film pages
 // @author       Travis Sanders
 // @match        https://letterboxd.com/film/*
@@ -17,6 +17,11 @@
     'use strict';
 
     const MM_BASE = 'https://www.moviemadness.org';
+
+    // MM search pages hold 12 results. Title matches cluster at the top, so a
+    // few pages is plenty; the cap bounds requests for very common titles.
+    const PAGE_SIZE = 12;
+    const MAX_PAGES = 5;
 
     const FORMAT_ORDER = ['4K UHD', 'Blu-Ray', 'DVD', 'VHS'];
 
@@ -261,22 +266,27 @@
         return null;
     }
 
-    // Returns { formats: Set<string>, location: string|null }
+    // Returns { formats: Set<string>, location: string|null, titleMatches: number,
+    // hasMore: boolean } for one page of search results.
     function parseSearchResults(html, film) {
         const parser = new DOMParser();
         const doc    = parser.parseFromString(html, 'text/html');
         const found  = new Set();
         let location = null;
+        let titleMatches = 0;
 
         // Each result is one [data-mmdb-id] block holding the card and its
         // detail dialog. If MM changes that markup, fall back to the older
         // heading scan rather than silently reporting nothing.
         const cards = doc.querySelectorAll('[data-mmdb-id]');
-        if (!cards.length) return parseSearchResultsByHeading(doc, film.title, film.year);
+        if (!cards.length) {
+            return { ...parseSearchResultsByHeading(doc, film.title, film.year), titleMatches: 0, hasMore: false };
+        }
 
         cards.forEach(card => {
             const mmTitle = card.querySelector('h3')?.textContent.trim();
             if (!mmTitle || !titlesMatch(film.title, mmTitle)) return;
+            titleMatches++;
 
             // Allow ±1 year tolerance — databases often disagree for films with
             // late or multi-country releases (e.g. Casablanca: 1942 vs 1943).
@@ -289,7 +299,11 @@
             if (location === null) location = cardLocation(card);
         });
 
-        return { formats: found, location };
+        // MM loads the next page on scroll via an htmx "?offset=N" trigger,
+        // present only while more results remain.
+        const hasMore = Boolean(doc.querySelector('[hx-get*="offset="]'));
+
+        return { formats: found, location, titleMatches, hasMore };
     }
 
     // Legacy fallback: scan headings without identity verification.
@@ -349,9 +363,12 @@
     }
 
     function buildWidget(formats, location, searchUrl) {
-        const style = document.createElement('style');
-        style.textContent = '#mm-availability a.mm-badge:hover { opacity: 0.8; }';
-        document.head.appendChild(style);
+        if (!document.getElementById('mm-availability-style')) {
+            const style = document.createElement('style');
+            style.id = 'mm-availability-style';
+            style.textContent = '#mm-availability a.mm-badge:hover { opacity: 0.8; }';
+            document.head.appendChild(style);
+        }
 
         const widget = document.createElement('section');
         widget.id = 'mm-availability';
@@ -469,28 +486,58 @@
         if (!film.title) return;
 
         const searchUrl = `${MM_BASE}/search/?query=${encodeURIComponent(toSearchQuery(film.title))}`;
+        const formats     = new Set();
+        let location      = null;
         let fetchedWidget = null;
+        let injected      = null;
         let anchor        = null;
 
         function tryInject() {
-            if (!fetchedWidget || !anchor) return;
-            anchor.insertAdjacentElement('afterend', fetchedWidget);
+            if (!fetchedWidget || !anchor || fetchedWidget === injected) return;
+            if (injected) injected.replaceWith(fetchedWidget);
+            else anchor.insertAdjacentElement('afterend', fetchedWidget);
+            injected = fetchedWidget;
         }
 
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url:    searchUrl,
-            onload(response) {
-                try {
-                    const { formats, location } = parseSearchResults(response.responseText, film);
+        // MM returns results 12 at a time, best title matches first. Keep paging
+        // while a page still holds title matches: other editions or a same-titled
+        // film can land just past the first page (e.g. "HEAT, THE" at 22-23 for
+        // "Heat"). A page with none ends the search.
+        function fetchPage(page) {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url:    page ? `${searchUrl}&offset=${page * PAGE_SIZE}` : searchUrl,
+                onload(response) {
+                    let result;
+                    try {
+                        result = parseSearchResults(response.responseText, film);
+                    } catch (e) {
+                        if (page === 0) return;   // nothing usable to show
+                    }
+                    if (result) {
+                        result.formats.forEach(f => formats.add(f));
+                        location ??= result.location;
+                    }
+
+                    const more = Boolean(result?.hasMore && result.titleMatches && page + 1 < MAX_PAGES);
+                    if (more) fetchPage(page + 1);
+
+                    // Show badges as soon as there are any; hold "Not found"
+                    // until the last page is in.
+                    if (formats.size || !more) {
+                        fetchedWidget = buildWidget(formats, location, searchUrl);
+                        tryInject();
+                    }
+                },
+                onerror() {
+                    if (page === 0) return;
                     fetchedWidget = buildWidget(formats, location, searchUrl);
-                } catch (e) {
-                    fetchedWidget = null;
-                }
-                tryInject();
-            },
-            onerror() {},
-        });
+                    tryInject();
+                },
+            });
+        }
+
+        fetchPage(0);
 
         // #watch > section exists when streaming options are listed; falls back
         // to #watch or section.watch-panel for films with no streaming options.
