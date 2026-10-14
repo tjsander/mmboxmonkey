@@ -51,20 +51,15 @@
 
     const TMDB_LINK = /themoviedb\.org\/(movie|tv)\/([1-9]\d*)/;
 
-    // Film pages link to the film's TMDB page in their footer. The <body>
-    // data-tmdb-* attributes are a fallback only: for shows they can name a
-    // different entry than the link does (Dekalog), and the link is the right
-    // one. Returns { kind: 'movie'|'tv', id: number } or null.
+    // Film pages link to the film's TMDB page in their footer; Letterboxd is
+    // built on TMDB, so every film has one. The <body> data-tmdb-* attributes
+    // are not used: for shows they can name a different entry than the link
+    // does (Dekalog), and the link is the right one.
+    // Returns { kind: 'movie'|'tv', id: number } or null.
     function getTmdb() {
         const link = document.querySelector('a[href*="themoviedb.org/movie/"], a[href*="themoviedb.org/tv/"]');
         const m = link?.getAttribute('href').match(TMDB_LINK);
-        let kind = m?.[1];
-        let id   = Number(m?.[2]);
-        if (!id) {
-            kind = document.body.dataset.tmdbType;
-            id   = Number(document.body.dataset.tmdbId);
-        }
-        return id && (kind === 'movie' || kind === 'tv') ? { kind, id } : null;
+        return m ? { kind: m[1], id: Number(m[2]) } : null;
     }
 
     // Review and diary pages (/<member>/film/<slug>/) carry no TMDB id, so read
@@ -361,12 +356,8 @@
         let titleMatches = 0;
 
         // Each result is one [data-mmdb-id] block holding the card and its
-        // detail dialog. If MM changes that markup, fall back to the older
-        // heading scan rather than silently reporting nothing.
+        // detail dialog.
         const cards = doc.querySelectorAll('[data-mmdb-id]');
-        if (!cards.length) {
-            return { ...parseSearchResultsByHeading(doc, film.title, film.year), titleMatches: 0, hasMore: false };
-        }
 
         cards.forEach(card => {
             const mmTitle = card.querySelector('h3')?.textContent.trim();
@@ -389,62 +380,6 @@
         const hasMore = Boolean(doc.querySelector('[hx-get*="offset="]'));
 
         return { formats: found, location, titleMatches, hasMore };
-    }
-
-    // Legacy fallback: scan headings without identity verification.
-    function parseSearchResultsByHeading(doc, title, year) {
-        const found  = new Set();
-        let location = null;
-
-        doc.querySelectorAll('h1, h2, h3, h4, h5').forEach(el => {
-            const text = el.textContent.trim();
-            if (!text) return;
-
-            // Allow ±1 year tolerance — databases often disagree for films with
-            // late or multi-country releases (e.g. Casablanca: 1942 vs 1943).
-            if (year) {
-                const elYear = text.match(/\((\d{4})\)/)?.[1];
-                if (elYear && Math.abs(Number(elYear) - Number(year)) > 1) return;
-            }
-
-            if (!titlesMatch(title, text)) return;
-
-            FORMAT_PATTERNS.forEach(({ re, label }) => {
-                if (re.test(text)) found.add(label);
-            });
-
-            const card = el.parentElement?.closest('article, section, li') ?? el.parentElement;
-
-            // Some entries have no format in the heading (e.g. "JEEPERS CREEPERS 2
-            // (COLLECTORS EDITION)") — fall back to bare format badges in the card.
-            if (card) {
-                card.querySelectorAll('*').forEach(child => {
-                    if (child.children.length > 0) return;
-                    const t = child.textContent.trim();
-                    if (/^DVD$/i.test(t))           found.add('DVD');
-                    else if (/^VHS$/i.test(t))      found.add('VHS');
-                    else if (/^BLU[\s-]?RAY$/i.test(t)) found.add('Blu-Ray');
-                    else if (/^4K\s*UHD$/i.test(t)) found.add('4K UHD');
-                });
-            }
-
-            if (location !== null) return;
-            if (!card) return;
-
-            for (const child of card.querySelectorAll('*')) {
-                const t = child.textContent.trim();
-                if (!t.startsWith('MM LOCATION')) continue;
-                const inlineMatch = t.match(/MM LOCATION[:\s]+(.+)/);
-                if (inlineMatch) {
-                    location = formatLocation(inlineMatch[1].trim());
-                } else if (child.nextElementSibling) {
-                    location = formatLocation(child.nextElementSibling.textContent.trim());
-                }
-                break;
-            }
-        });
-
-        return { formats: found, location };
     }
 
     // The box and its "Movie Madness" header, which every state shares.
