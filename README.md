@@ -23,12 +23,16 @@ When you're browsing a film on Letterboxd, the script checks the Movie Madness c
 
 ## How it works
 
-On each Letterboxd film page the script:
+On each Letterboxd film page the script first reads the film's TMDB id from the page and looks it up in a [daily list of Movie Madness rentals by TMDB id](https://github.com/tjsander/movie-madness-pdx-tmdb). That is one small request to GitHub Pages, with nothing to match: the widget shows the formats held and the shelf they're on, and a format held as a single rental links straight to its page.
+
+The list covers about three quarters of the store's rentals. When it has nothing for a film, can't be reached, or the page has no TMDB id (review and diary pages), the script searches the store instead:
 
 1. Reads the film title, year, and director credits from the page's Open Graph metadata and crew links.
 2. Fetches `moviemadness.org/search/?query=<title>` via `GM_xmlhttpRequest`, bypassing CORS restrictions. Movie Madness returns 12 results per page, best title matches first, so the script keeps requesting the next page (`&offset=12`, `24`, …) while a page still contains title matches, up to five pages.
 3. Parses the server-rendered HTML into individual catalog entries, keeps the ones whose title, year, and director match the film you're viewing, then extracts format labels (`4K UHD`, `Blu-Ray`, `DVD`, `VHS`).
 4. Injects a small widget into the "Where to Watch" panel showing available formats as colored badges, each linking to the Movie Madness search results.
+
+Everything below describes that search.
 
 Title matching handles common variations between the two sites — articles moved to the end (`GODFATHER, THE`), edition suffixes (`(UNRATED)`, `(ARROW)`), inconsistent Blu-Ray spellings (`BLU RAY` vs `BLU-RAY`), and sequel numbers Movie Madness adds ahead of a subtitle (`JAWS 4: THE REVENGE` for *Jaws: The Revenge*).
 
@@ -46,7 +50,7 @@ If Letterboxd doesn't expose a director for the page, verification is skipped an
 
 - Availability reflects what's in the Movie Madness collection, not whether a specific copy is currently on the shelf.
 - Formats from all verified entries for a film are combined, so a title held on several discs shows every format available.
-- **On unique identifiers:** Movie Madness doesn't publish one. Its pages expose only internal ids (`data-mmdb-id`, `data-wp-id`), and the public WordPress REST API (`/wp-json/wp/v2/rental/<id>`) returns no TMDB or IMDb field. The catalog *is* built on TMDB data — posters and cast portraits are hotlinked from `image.tmdb.org`, and the poster filename is a real TMDB poster path — but that path can't be used as a key: entries for the same film sometimes use different posters (the 4K and Blu-Ray editions of *Heat* use two different ones), and turning Letterboxd's TMDB id into a poster path would need a TMDB API key. Director verification gets the same accuracy without one.
+- **On unique identifiers:** Movie Madness doesn't publish one. Its pages expose only internal ids (`data-mmdb-id`, `data-wp-id`), and the public WordPress REST API (`/wp-json/wp/v2/rental/<id>`) returns no TMDB or IMDb field. The catalog *is* built on TMDB data — posters and cast portraits are hotlinked from `image.tmdb.org`, and the poster filename is a real TMDB poster path — but that path can't be used as a key from the browser: entries for the same film sometimes use different posters (the 4K and Blu-Ray editions of *Heat* use two different ones), and turning Letterboxd's TMDB id into a poster path would need a TMDB API key. The daily list does that work ahead of time, with a key that stays off your machine; director verification covers the rentals it couldn't identify.
 - The script only runs on `letterboxd.com/film/*` pages and makes no requests until you visit one.
 
 ## License

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Movie Madness Availability for Letterboxd
 // @namespace    https://letterboxd.com
-// @version      1.1.3
+// @version      1.2.0
 // @description  Shows Movie Madness Portland rental availability on Letterboxd film pages
 // @author       Travis Sanders
 // @match        https://letterboxd.com/film/*
@@ -11,6 +11,7 @@
 // @updateURL    https://github.com/tjsander/mmboxmonkey/raw/main/moviemadness-letterboxd.user.js
 // @grant        GM_xmlhttpRequest
 // @connect      moviemadness.org
+// @connect      tjsander.github.io
 // ==/UserScript==
 
 (function () {
@@ -23,7 +24,13 @@
     const PAGE_SIZE = 12;
     const MAX_PAGES = 5;
 
-    const FORMAT_ORDER = ['4K UHD', 'Blu-Ray', 'DVD', 'VHS'];
+    // Movie Madness rentals by TMDB id, as static files rebuilt once a day:
+    // https://github.com/tjsander/movie-madness-pdx-tmdb. An id's rentals are
+    // under its key in tmdb/<movie|tv>/<id % 1000, three digits>.json.
+    const API_BASE   = 'https://tjsander.github.io/movie-madness-pdx-tmdb';
+    const API_SHARDS = 1000;
+
+    const FORMAT_ORDER = ['4K UHD', 'Blu-Ray 3D', 'Blu-Ray', 'DVD', 'DVD-R', 'VHS'];
 
     // MM title strings use e.g. "(BLU RAY)" and "(BLU-RAY)" interchangeably.
     const FORMAT_PATTERNS = [
@@ -34,11 +41,66 @@
     ];
 
     const FORMAT_COLORS = {
-        '4K UHD':  '#e8832a',
-        'Blu-Ray': '#4c9be8',
-        'DVD':     '#67c267',
-        'VHS':     '#c8a84b',
+        '4K UHD':     '#e8832a',
+        'Blu-Ray 3D': '#4c9be8',
+        'Blu-Ray':    '#4c9be8',
+        'DVD':        '#67c267',
+        'DVD-R':      '#67c267',
+        'VHS':        '#c8a84b',
     };
+
+    // Film pages link to the film's TMDB page in their footer. The <body>
+    // data-tmdb-* attributes are a fallback only: for shows they can name a
+    // different entry than the link does (Dekalog), and the link is the right
+    // one. Review and diary pages have neither.
+    // Returns { kind: 'movie'|'tv', id: number } or null.
+    function getTmdb() {
+        const link = document.querySelector('a[href*="themoviedb.org/movie/"], a[href*="themoviedb.org/tv/"]');
+        const m = link?.getAttribute('href').match(/themoviedb\.org\/(movie|tv)\/(\d+)/);
+        let kind = m?.[1];
+        let id   = Number(m?.[2]);
+        if (!id) {
+            kind = document.body.dataset.tmdbType;
+            id   = Number(document.body.dataset.tmdbId);
+        }
+        return id && (kind === 'movie' || kind === 'tv') ? { kind, id } : null;
+    }
+
+    // Turns the lookup files' rentals for one TMDB id into what the widget
+    // shows. A format held as a single rental links straight to that rental;
+    // one held in several editions links to a search for the store's own title,
+    // which can differ from Letterboxd's ("STAR WARS EP. 5: EMPIRE STRIKES
+    // BACK"). The store cuts long titles off mid-parenthesis. `shelf` is the
+    // permanent shelf and `display` a temporary one (New Arrival, Staff Picks).
+    // Returns { formats: Set<string>, locations: string[], links: {format: url} }.
+    function fromRentals(rentals) {
+        const formats = new Set();
+        const links   = {};
+        const places  = new Map();
+
+        rentals.forEach(r => {
+            if (!FORMAT_COLORS[r.format]) return;
+            if (formats.has(r.format)) {
+                const base = mmTitleBase(r.title).replace(/\s*\([^)]*$/, '');
+                links[r.format] = `${MM_BASE}/search/?query=${encodeURIComponent(toSearchQuery(base))}`;
+            } else {
+                links[r.format] = `${MM_BASE}/?rental=${encodeURIComponent(r.slug)}`;
+            }
+            formats.add(r.format);
+
+            const place = [r.display, r.shelf].filter(Boolean).join(' · ');
+            if (!place) return;
+            if (!places.has(place)) places.set(place, new Set());
+            places.get(place).add(r.format);
+        });
+
+        const locations = places.size === 1
+            ? [...places.keys()]
+            : [...places].map(([place, held]) =>
+                `${FORMAT_ORDER.filter(f => held.has(f)).join(', ')}: ${place}`);
+
+        return { formats, locations, links };
+    }
 
     function getFilmInfo() {
         let content = document.querySelector('meta[property="og:title"]')?.getAttribute('content') || '';
@@ -362,7 +424,7 @@
         return { formats: found, location };
     }
 
-    function buildWidget(formats, location, searchUrl) {
+    function buildWidget(formats, locations, searchUrl, links = {}) {
         if (!document.getElementById('mm-availability-style')) {
             const style = document.createElement('style');
             style.id = 'mm-availability-style';
@@ -418,7 +480,7 @@
                 if (!formats.has(fmt)) return;
                 const badge = document.createElement('a');
                 badge.className = 'mm-badge';
-                badge.href      = searchUrl;
+                badge.href      = links[fmt] ?? searchUrl;
                 badge.target    = '_blank';
                 badge.rel       = 'noopener noreferrer';
                 badge.textContent = fmt;
@@ -438,12 +500,12 @@
 
             widget.appendChild(row);
 
-            if (location) {
+            locations.forEach((location, i) => {
                 const loc = document.createElement('p');
                 loc.textContent = location;
-                loc.style.cssText = 'margin:0.5em 0 0;font-size:0.85em;color:#678;';
+                loc.style.cssText = `margin:${i ? '0.2em' : '0.5em'} 0 0;font-size:0.85em;color:#678;`;
                 widget.appendChild(loc);
-            }
+            });
         }
 
         return widget;
@@ -525,19 +587,47 @@
                     // Show badges as soon as there are any; hold "Not found"
                     // until the last page is in.
                     if (formats.size || !more) {
-                        fetchedWidget = buildWidget(formats, location, searchUrl);
+                        fetchedWidget = buildWidget(formats, location ? [location] : [], searchUrl);
                         tryInject();
                     }
                 },
                 onerror() {
                     if (page === 0) return;
-                    fetchedWidget = buildWidget(formats, location, searchUrl);
+                    fetchedWidget = buildWidget(formats, location ? [location] : [], searchUrl);
                     tryInject();
                 },
             });
         }
 
-        fetchPage(0);
+        // The lookup files answer in one request and know the rental's TMDB id,
+        // so there is nothing to match. They cover about three quarters of the
+        // store's rentals, so a film they don't list may still be there under
+        // a rental with no id: anything but a hit falls back to the search.
+        function fetchByTmdb(tmdb) {
+            const shard = String(tmdb.id % API_SHARDS).padStart(3, '0');
+            GM_xmlhttpRequest({
+                method:  'GET',
+                url:     `${API_BASE}/tmdb/${tmdb.kind}/${shard}.json`,
+                timeout: 8000,
+                onload(response) {
+                    let held;
+                    try {
+                        const rentals = JSON.parse(response.responseText)[tmdb.id];
+                        if (Array.isArray(rentals)) held = fromRentals(rentals);
+                    } catch (e) { /* not the file we expected */ }
+                    if (!held?.formats.size) { fetchPage(0); return; }
+
+                    fetchedWidget = buildWidget(held.formats, held.locations, searchUrl, held.links);
+                    tryInject();
+                },
+                onerror()   { fetchPage(0); },
+                ontimeout() { fetchPage(0); },
+            });
+        }
+
+        const tmdb = getTmdb();
+        if (tmdb) fetchByTmdb(tmdb);
+        else fetchPage(0);
 
         // #watch > section exists when streaming options are listed; falls back
         // to #watch or section.watch-panel for films with no streaming options.
