@@ -49,14 +49,15 @@
         'VHS':        '#c8a84b',
     };
 
+    const TMDB_LINK = /themoviedb\.org\/(movie|tv)\/([1-9]\d*)/;
+
     // Film pages link to the film's TMDB page in their footer. The <body>
     // data-tmdb-* attributes are a fallback only: for shows they can name a
     // different entry than the link does (Dekalog), and the link is the right
-    // one. Review and diary pages have neither.
-    // Returns { kind: 'movie'|'tv', id: number } or null.
+    // one. Returns { kind: 'movie'|'tv', id: number } or null.
     function getTmdb() {
         const link = document.querySelector('a[href*="themoviedb.org/movie/"], a[href*="themoviedb.org/tv/"]');
-        const m = link?.getAttribute('href').match(/themoviedb\.org\/(movie|tv)\/(\d+)/);
+        const m = link?.getAttribute('href').match(TMDB_LINK);
         let kind = m?.[1];
         let id   = Number(m?.[2]);
         if (!id) {
@@ -66,12 +67,39 @@
         return id && (kind === 'movie' || kind === 'tv') ? { kind, id } : null;
     }
 
+    // Review and diary pages (/<member>/film/<slug>/) carry no TMDB id, so read
+    // it from the film's own page: one request to Letterboxd, far quicker than
+    // searching the store. Calls back with getTmdb()'s result or null.
+    function findTmdb(cb) {
+        const here = getTmdb();
+        const slug = document.location.pathname.match(/^\/[^/]+\/film\/([^/]+)\//)?.[1];
+        if (here || !slug) { cb(here); return; }
+
+        fetch(`${document.location.origin}/film/${slug}/`)
+            .then(response => (response.ok ? response.text() : ''))
+            .then(html => {
+                const m = html.match(TMDB_LINK);
+                cb(m ? { kind: m[1], id: Number(m[2]) } : null);
+            })
+            .catch(() => cb(null));
+    }
+
+    // The store has no page for a single rental worth linking to: details open
+    // in a pop-up that an address can't trigger, and the bare ?rental=<slug>
+    // page often carries another film's name in its address. A search for the
+    // store's own full title lists just that rental; without the edition and
+    // format it lists every edition from that year. The store cuts long titles
+    // off mid-parenthesis, so an unclosed one is dropped.
+    function rentalSearchUrl(mmTitle, allEditions) {
+        let query = mmTitle.replace(/\s*\([^)]*$/, '');
+        if (allEditions) query = query.replace(/\s*\((?!\d{4}\))[^)]*\)/g, '');
+        return `${MM_BASE}/search/?query=${encodeURIComponent(toSearchQuery(query))}`;
+    }
+
     // Turns the lookup files' rentals for one TMDB id into what the widget
-    // shows. A format held as a single rental links straight to that rental;
-    // one held in several editions links to a search for the store's own title,
-    // which can differ from Letterboxd's ("STAR WARS EP. 5: EMPIRE STRIKES
-    // BACK"). The store cuts long titles off mid-parenthesis. `shelf` is the
-    // permanent shelf and `display` a temporary one (New Arrival, Staff Picks).
+    // shows. Each badge links to a search for its rental, or for every edition
+    // when the format is held in several. `shelf` is the permanent shelf and
+    // `display` a temporary one (New Arrival, Staff Picks).
     // Returns { formats: Set<string>, locations: string[], links: {format: url} }.
     function fromRentals(rentals) {
         const formats = new Set();
@@ -80,12 +108,7 @@
 
         rentals.forEach(r => {
             if (!FORMAT_COLORS[r.format]) return;
-            if (formats.has(r.format)) {
-                const base = mmTitleBase(r.title).replace(/\s*\([^)]*$/, '');
-                links[r.format] = `${MM_BASE}/search/?query=${encodeURIComponent(toSearchQuery(base))}`;
-            } else {
-                links[r.format] = `${MM_BASE}/?rental=${encodeURIComponent(r.slug)}`;
-            }
+            links[r.format] = rentalSearchUrl(r.title, formats.has(r.format));
             formats.add(r.format);
 
             const place = [r.display, r.shelf].filter(Boolean).join(' · ');
@@ -424,11 +447,17 @@
         return { formats: found, location };
     }
 
-    function buildWidget(formats, locations, searchUrl, links = {}) {
+    // The box and its "Movie Madness" header, which every state shares.
+    function buildFrame() {
         if (!document.getElementById('mm-availability-style')) {
             const style = document.createElement('style');
             style.id = 'mm-availability-style';
-            style.textContent = '#mm-availability a.mm-badge:hover { opacity: 0.8; }';
+            style.textContent = [
+                '#mm-availability a.mm-badge:hover { opacity: 0.8; }',
+                '@keyframes mm-reel { to { transform: rotate(360deg); } }',
+                '#mm-availability .mm-reel { animation: mm-reel 1.6s linear infinite; }',
+                '@media (prefers-reduced-motion: reduce) { #mm-availability .mm-reel { animation: none; } }',
+            ].join('\n');
             document.head.appendChild(style);
         }
 
@@ -460,6 +489,48 @@
         header.appendChild(favicon);
         header.appendChild(mmLabel);
         widget.appendChild(header);
+        return widget;
+    }
+
+    // Shown while the answer is on its way: a turning film reel.
+    function buildLoading() {
+        const SVG = 'http://www.w3.org/2000/svg';
+        const shape = (name, attrs) => {
+            const el = document.createElementNS(SVG, name);
+            Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
+            return el;
+        };
+
+        const reel = shape('svg', { viewBox: '0 0 24 24', width: 18, height: 18, class: 'mm-reel', 'aria-hidden': 'true' });
+        reel.style.cssText = 'display:block;flex-shrink:0;';
+        reel.appendChild(shape('circle', { cx: 12, cy: 12, r: 10.5, fill: 'none', stroke: '#e9b84a', 'stroke-width': 1.5 }));
+        reel.appendChild(shape('circle', { cx: 12, cy: 12, r: 1.5, fill: '#e9b84a' }));
+        for (let i = 0; i < 5; i++) {
+            const angle = (i * 2 * Math.PI) / 5;
+            reel.appendChild(shape('circle', {
+                cx: (12 + 6 * Math.sin(angle)).toFixed(2),
+                cy: (12 - 6 * Math.cos(angle)).toFixed(2),
+                r: 2.2, fill: '#e9b84a',
+            }));
+        }
+
+        const text = document.createElement('span');
+        text.textContent = 'Checking the collection…';
+
+        const row = document.createElement('p');
+        row.setAttribute('role', 'status');
+        row.style.cssText = 'margin:0;display:flex;align-items:center;gap:0.5em;color:#678;';
+        row.appendChild(reel);
+        row.appendChild(text);
+
+        const widget = buildFrame();
+        widget.appendChild(row);
+        return widget;
+    }
+
+    // `emptyText` is what the search link reads when there are no formats.
+    function buildWidget(formats, locations, searchUrl, links = {}, emptyText = 'Not found in collection') {
+        const widget = buildFrame();
 
         if (formats.size === 0) {
             const msg = document.createElement('p');
@@ -468,7 +539,7 @@
             link.href = searchUrl;
             link.target = '_blank';
             link.rel = 'noopener noreferrer';
-            link.textContent = 'Not found in collection';
+            link.textContent = emptyText;
             link.style.cssText = 'color:#567;';
             msg.appendChild(link);
             widget.appendChild(msg);
@@ -503,7 +574,9 @@
             locations.forEach((location, i) => {
                 const loc = document.createElement('p');
                 loc.textContent = location;
-                loc.style.cssText = `margin:${i ? '0.2em' : '0.5em'} 0 0;font-size:0.85em;color:#678;`;
+                // Editions shelved apart: a faint rule between the shelves.
+                const rule = i ? 'padding-top:0.5em;border-top:1px solid rgba(255,255,255,0.1);' : '';
+                loc.style.cssText = `margin:0.5em 0 0;font-size:0.85em;color:#678;${rule}`;
                 widget.appendChild(loc);
             });
         }
@@ -511,36 +584,19 @@
         return widget;
     }
 
-    // Watches for `primary` to appear in the DOM; falls back to the first match
-    // in `fallbacks` after `timeoutMs`. Only needed because the watch panel
-    // renders dynamically and may be empty for films with no streaming options.
-    function waitForElement(primary, fallbacks, timeoutMs, cb) {
-        const existing = document.querySelector(primary);
-        if (existing) { cb(existing); return; }
-
-        let done = false;
-
-        const observer = new MutationObserver(() => {
-            if (done) return;
-            const el = document.querySelector(primary);
-            if (el) {
-                done = true;
-                observer.disconnect();
-                clearTimeout(timer);
-                cb(el);
-            }
-        });
-        observer.observe(document.body, { childList: true, subtree: true });
-
-        const timer = setTimeout(() => {
-            if (done) return;
-            done = true;
-            observer.disconnect();
-            for (const sel of fallbacks) {
-                const el = document.querySelector(sel);
-                if (el) { cb(el); return; }
-            }
-        }, timeoutMs);
+    // Puts the widget in the "Where to watch" panel. The page arrives with an
+    // empty #watch; Letterboxd fills it with a <section> of streaming services a
+    // moment later, or never for films with none. The widget goes right after
+    // #watch until that section exists, then right after the section, so it
+    // never waits on Letterboxd's own request. Review pages load the whole
+    // panel later, into a placeholder under the poster; until then the widget
+    // goes after the placeholder.
+    function place(widget) {
+        const after = document.querySelector('#watch > section:not(#mm-availability)')
+            ?? document.querySelector('#watch')
+            ?? document.querySelector('section.watch-panel')
+            ?? document.querySelector('[data-on-load="csi-availability"]');
+        if (after && after.nextElementSibling !== widget) after.insertAdjacentElement('afterend', widget);
     }
 
     function run() {
@@ -550,15 +606,27 @@
         const searchUrl = `${MM_BASE}/search/?query=${encodeURIComponent(toSearchQuery(film.title))}`;
         const formats     = new Set();
         let location      = null;
-        let fetchedWidget = null;
-        let injected      = null;
-        let anchor        = null;
+        let widget        = null;
 
-        function tryInject() {
-            if (!fetchedWidget || !anchor || fetchedWidget === injected) return;
-            if (injected) injected.replaceWith(fetchedWidget);
-            else anchor.insertAdjacentElement('afterend', fetchedWidget);
-            injected = fetchedWidget;
+        function show(next) {
+            if (widget) widget.remove();
+            widget = next;
+            place(widget);
+        }
+
+        // Nothing to say after the search itself failed with no formats found.
+        function showUnreachable() {
+            show(buildWidget(formats, [], searchUrl, {}, 'Couldn’t check; search Movie Madness'));
+        }
+
+        // Follow the panel while Letterboxd is still filling it in.
+        const observer = new MutationObserver(() => { if (widget) place(widget); });
+        observer.observe(document.body, { childList: true, subtree: true });
+        setTimeout(() => observer.disconnect(), 15000);
+
+        function searchFailed(page) {
+            if (page === 0) showUnreachable();
+            else show(buildWidget(formats, location ? [location] : [], searchUrl));
         }
 
         // MM returns results 12 at a time, best title matches first. Keep paging
@@ -566,15 +634,20 @@
         // film can land just past the first page (e.g. "HEAT, THE" at 22-23 for
         // "Heat"). A page with none ends the search.
         function fetchPage(page) {
+            // The search takes seconds, so say it is under way. The lookup
+            // files have answered by now (or there was no id to ask them
+            // about), so a film they hold never shows this.
+            if (page === 0) show(buildLoading());
             GM_xmlhttpRequest({
-                method: 'GET',
-                url:    page ? `${searchUrl}&offset=${page * PAGE_SIZE}` : searchUrl,
+                method:  'GET',
+                url:     page ? `${searchUrl}&offset=${page * PAGE_SIZE}` : searchUrl,
+                timeout: 15000,
                 onload(response) {
                     let result;
                     try {
                         result = parseSearchResults(response.responseText, film);
                     } catch (e) {
-                        if (page === 0) return;   // nothing usable to show
+                        if (page === 0) { showUnreachable(); return; }
                     }
                     if (result) {
                         result.formats.forEach(f => formats.add(f));
@@ -587,15 +660,11 @@
                     // Show badges as soon as there are any; hold "Not found"
                     // until the last page is in.
                     if (formats.size || !more) {
-                        fetchedWidget = buildWidget(formats, location ? [location] : [], searchUrl);
-                        tryInject();
+                        show(buildWidget(formats, location ? [location] : [], searchUrl));
                     }
                 },
-                onerror() {
-                    if (page === 0) return;
-                    fetchedWidget = buildWidget(formats, location ? [location] : [], searchUrl);
-                    tryInject();
-                },
+                onerror()   { searchFailed(page); },
+                ontimeout() { searchFailed(page); },
             });
         }
 
@@ -617,24 +686,18 @@
                     } catch (e) { /* not the file we expected */ }
                     if (!held?.formats.size) { fetchPage(0); return; }
 
-                    fetchedWidget = buildWidget(held.formats, held.locations, searchUrl, held.links);
-                    tryInject();
+                    show(buildWidget(held.formats, held.locations, searchUrl, held.links));
                 },
                 onerror()   { fetchPage(0); },
                 ontimeout() { fetchPage(0); },
             });
         }
 
-        const tmdb = getTmdb();
-        if (tmdb) fetchByTmdb(tmdb);
-        else fetchPage(0);
-
-        // #watch > section exists when streaming options are listed; falls back
-        // to #watch or section.watch-panel for films with no streaming options.
-        waitForElement('#watch > section', ['#watch', 'section.watch-panel'], 5000, el => {
-            anchor = el;
-            tryInject();
+        findTmdb(tmdb => {
+            if (tmdb) fetchByTmdb(tmdb);
+            else fetchPage(0);
         });
+
     }
 
     run();

@@ -23,7 +23,7 @@ When you're browsing a film on Letterboxd, the script checks the Movie Madness c
 
 ## How it works
 
-On each Letterboxd film page the script first reads the film's TMDB id from the page and looks it up in a [daily list of Movie Madness rentals by TMDB id](https://github.com/tjsander/movie-madness-pdx-tmdb). That is one small request to GitHub Pages, with nothing to match: the widget shows the formats held and the shelf they're on, and a format held as a single rental links straight to its page.
+On each Letterboxd film page the script first reads the film's TMDB id from the page and looks it up in a [daily list of Movie Madness rentals by TMDB id](https://github.com/tjsander/movie-madness-pdx-tmdb). That is one small request to GitHub Pages, with nothing to match: the widget shows the formats held and the shelf they're on, and each badge links to a search for that rental under the store's own title.
 
 The list covers about three quarters of the store's rentals. When it has nothing for a film, can't be reached, or the page has no TMDB id (review and diary pages), the script searches the store instead:
 
