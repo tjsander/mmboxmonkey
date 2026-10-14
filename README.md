@@ -4,9 +4,9 @@ Long live physical media!
 
 Movie Madness is an independent video store and nonprofit film museum in Portland, Oregon. This script adds [Movie Madness](https://www.moviemadness.org) rental availability to [Letterboxd](https://letterboxd.com) film pages. 
 
-When you're browsing a film on Letterboxd, the script checks the Movie Madness collection and shows which formats are available to rent — with a direct link to the search results.
+When you're browsing a film on Letterboxd, the script checks the Movie Madness collection and shows which formats are available to rent and which shelf they're on — with a direct link to the search results.
 
-![Screenshot showing the Movie Madness widget on a Letterboxd film page, displaying format badges for Blu-Ray and DVD](screenshot.png)
+![Screenshot showing the Movie Madness widget in the Where to Watch panel of a Letterboxd film page, with 4K UHD, Blu-Ray and DVD badges and the two shelves they're on](screenshot.png)
 
 ## Installation
 
@@ -19,18 +19,20 @@ When you're browsing a film on Letterboxd, the script checks the Movie Madness c
 
    Or install manually: open your userscript manager dashboard, create a new script, and paste in the contents of `moviemadness-letterboxd.user.js`.
 
-3. Navigate to any film page on Letterboxd (e.g. `letterboxd.com/film/hellraiser/`). The widget appears in the "Where to Watch" panel.
+3. Navigate to any film page on Letterboxd (e.g. `letterboxd.com/film/hellraiser/`), or a member's review or diary entry for a film. The widget appears in the "Where to Watch" panel.
 
 ## How it works
 
-On each Letterboxd film page the script first reads the film's TMDB id from the page and looks it up in a [daily list of Movie Madness rentals by TMDB id](https://github.com/tjsander/movie-madness-pdx-tmdb). That is one small request to GitHub Pages, with nothing to match: the widget shows the formats held and the shelf they're on, and each badge links to a search for that rental under the store's own title.
+On each Letterboxd film page the script first reads the film's TMDB id from the page's link to TMDB and looks it up in a [daily list of Movie Madness rentals by TMDB id](https://github.com/tjsander/movie-madness-pdx-tmdb). That is one small request to GitHub Pages, with nothing to match: the widget shows the formats held (`4K UHD`, `Blu-Ray 3D`, `Blu-Ray`, `DVD`, `DVD-R`, `VHS`) and the shelf they're on, and each badge links to a search for that rental under the store's own title. When editions are shelved apart, each shelf is listed with its formats. Review and diary pages carry no TMDB id, so there the script reads it from the film's own Letterboxd page first.
 
-The list covers about three quarters of the store's rentals. When it has nothing for a film, can't be reached, or the page has no TMDB id (review and diary pages), the script searches the store instead:
+The widget appears as soon as there is an answer, without waiting for Letterboxd's streaming list, and moves under that list if one loads.
+
+The list is rebuilt once a day and covers about three quarters of the store's rentals. When it has nothing for a film or can't be reached, the script searches the store instead, showing a turning film reel in the widget until the search finishes:
 
 1. Reads the film title, year, and director credits from the page's Open Graph metadata and crew links.
 2. Fetches `moviemadness.org/search/?query=<title>` via `GM_xmlhttpRequest`, bypassing CORS restrictions. Movie Madness returns 12 results per page, best title matches first, so the script keeps requesting the next page (`&offset=12`, `24`, …) while a page still contains title matches, up to five pages.
 3. Parses the server-rendered HTML into individual catalog entries, keeps the ones whose title, year, and director match the film you're viewing, then extracts format labels (`4K UHD`, `Blu-Ray`, `DVD`, `VHS`).
-4. Injects a small widget into the "Where to Watch" panel showing available formats as colored badges, each linking to the Movie Madness search results.
+4. Shows the formats it found as colored badges, each linking to the Movie Madness search results, or "Not found in collection". If the store can't be reached, the widget links to the search instead.
 
 Everything below describes that search.
 
@@ -51,7 +53,16 @@ If Letterboxd doesn't expose a director for the page, verification is skipped an
 - Availability reflects what's in the Movie Madness collection, not whether a specific copy is currently on the shelf.
 - Formats from all verified entries for a film are combined, so a title held on several discs shows every format available.
 - **On unique identifiers:** Movie Madness doesn't publish one. Its pages expose only internal ids (`data-mmdb-id`, `data-wp-id`), and the public WordPress REST API (`/wp-json/wp/v2/rental/<id>`) returns no TMDB or IMDb field. The catalog *is* built on TMDB data — posters and cast portraits are hotlinked from `image.tmdb.org`, and the poster filename is a real TMDB poster path — but that path can't be used as a key from the browser: entries for the same film sometimes use different posters (the 4K and Blu-Ray editions of *Heat* use two different ones), and turning Letterboxd's TMDB id into a poster path would need a TMDB API key. The daily list does that work ahead of time, with a key that stays off your machine; director verification covers the rentals it couldn't identify.
-- The script only runs on `letterboxd.com/film/*` pages and makes no requests until you visit one.
+- The daily list is rebuilt each morning, so a rental added today is found by the search until the next day's list includes it.
+- The script only runs on `letterboxd.com/film/*` pages and members' `letterboxd.com/<member>/film/*` pages, and makes no requests until you visit one.
+
+## Data sources & attribution
+
+- **Catalog** (titles, formats, shelf locations): the public [Movie Madness](https://www.moviemadness.org/) rental catalog. This is an unaffiliated fan project, not endorsed by or connected with Movie Madness. If you find this useful, go rent a movie.
+- **TMDB ids** in the daily list: found with the [TMDB](https://www.themoviedb.org/) API. This product uses the TMDB API but is not endorsed or certified by TMDB.
+- Not affiliated with or endorsed by Letterboxd.
+
+The MIT license below covers this script's code, not the catalog data; see the [list's repository](https://github.com/tjsander/movie-madness-pdx-tmdb#license) for that.
 
 ## License
 
