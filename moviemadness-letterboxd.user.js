@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Movie Madness Availability for Letterboxd
 // @namespace    https://letterboxd.com
-// @version      1.2.0
+// @version      1.3.0
 // @description  Shows Movie Madness Portland rental availability on Letterboxd film pages
 // @author       Travis Sanders
 // @match        https://letterboxd.com/film/*
@@ -10,6 +10,9 @@
 // @downloadURL  https://github.com/tjsander/mmboxmonkey/raw/main/moviemadness-letterboxd.user.js
 // @updateURL    https://github.com/tjsander/mmboxmonkey/raw/main/moviemadness-letterboxd.user.js
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @run-at       document-end
 // @connect      moviemadness.org
 // @connect      tjsander.github.io
 // ==/UserScript==
@@ -29,6 +32,38 @@
     // under its key in tmdb/<movie|tv>/<id % 1000, three digits>.json.
     const API_BASE   = 'https://tjsander.github.io/movie-madness-pdx-tmdb';
     const API_SHARDS = 1000;
+
+    // Answers are kept between page views: the lookup files change once a
+    // day and the store's search takes seconds, so a film seen recently
+    // shows at once. Entries older than CACHE_TTL are fetched again.
+    const CACHE_TTL   = 6 * 60 * 60 * 1000;
+    const CACHE_LIMIT = 300;   // entries kept; the oldest go first
+    const CACHE_KEY   = 'mm-cache-v1';
+
+    // Only show the loading reel when an answer is slow, so a quick one
+    // doesn't flash it.
+    const LOADING_DELAY = 250;
+
+    function cacheGet(key) {
+        try {
+            const hit = GM_getValue(CACHE_KEY, {})[key];
+            return hit && Date.now() - hit.t < CACHE_TTL ? hit.v : undefined;
+        } catch (e) { return undefined; }
+    }
+
+    function cacheSet(key, value) {
+        try {
+            const all = GM_getValue(CACHE_KEY, {});
+            all[key] = { t: Date.now(), v: value };
+            const keys = Object.keys(all);
+            if (keys.length > CACHE_LIMIT) {
+                keys.sort((a, b) => all[a].t - all[b].t)
+                    .slice(0, keys.length - CACHE_LIMIT)
+                    .forEach(k => delete all[k]);
+            }
+            GM_setValue(CACHE_KEY, all);
+        } catch (e) { /* caching is best effort */ }
+    }
 
     const FORMAT_ORDER = ['4K UHD', 'Blu-Ray 3D', 'Blu-Ray', 'DVD', 'DVD-R', 'VHS'];
 
@@ -70,11 +105,16 @@
         const slug = document.location.pathname.match(/^\/[^/]+\/film\/([^/]+)\//)?.[1];
         if (here || !slug) { cb(here); return; }
 
+        const cached = cacheGet(`slug:${slug}`);
+        if (cached !== undefined) { cb(cached); return; }
+
         fetch(`${document.location.origin}/film/${slug}/`)
             .then(response => (response.ok ? response.text() : ''))
             .then(html => {
                 const m = html.match(TMDB_LINK);
-                cb(m ? { kind: m[1], id: Number(m[2]) } : null);
+                const tmdb = m ? { kind: m[1], id: Number(m[2]) } : null;
+                if (tmdb) cacheSet(`slug:${slug}`, tmdb);
+                cb(tmdb);
             })
             .catch(() => cb(null));
     }
@@ -466,6 +506,7 @@
     // `emptyText` is what the search link reads when there are no formats.
     function buildWidget(formats, locations, searchUrl, links = {}, emptyText = 'Not found in collection') {
         const widget = buildFrame();
+        widget.dataset.final = '1';
 
         if (formats.size === 0) {
             const msg = document.createElement('p');
@@ -539,11 +580,13 @@
         if (!film.title) return;
 
         const searchUrl = `${MM_BASE}/search/?query=${encodeURIComponent(toSearchQuery(film.title))}`;
+        const searchKey   = `search:${film.title}|${film.year ?? ''}|${[...film.directors].sort().join(',')}`;
         const formats     = new Set();
         let location      = null;
         let widget        = null;
 
         function show(next) {
+            if (next.dataset.final) clearTimeout(loadingTimer);
             if (widget) widget.remove();
             widget = next;
             place(widget);
@@ -555,9 +598,24 @@
         }
 
         // Follow the panel while Letterboxd is still filling it in.
-        const observer = new MutationObserver(() => { if (widget) place(widget); });
+        // Batched to one check per frame: Letterboxd changes the page many
+        // times while it loads, and each check queries the DOM. Once the
+        // streaming section is in, the widget's place is final.
+        let queued = false;
+        const observer = new MutationObserver(() => {
+            if (!widget || queued) return;
+            queued = true;
+            requestAnimationFrame(() => {
+                queued = false;
+                place(widget);
+                if (document.querySelector('#watch > section:not(#mm-availability)')) observer.disconnect();
+            });
+        });
         observer.observe(document.body, { childList: true, subtree: true });
         setTimeout(() => observer.disconnect(), 15000);
+
+        // The reel appears only if nothing has answered within LOADING_DELAY.
+        const loadingTimer = setTimeout(() => { if (!widget) show(buildLoading()); }, LOADING_DELAY);
 
         function searchFailed(page) {
             if (page === 0) showUnreachable();
@@ -572,7 +630,14 @@
             // The search takes seconds, so say it is under way. The lookup
             // files have answered by now (or there was no id to ask them
             // about), so a film they hold never shows this.
-            if (page === 0) show(buildLoading());
+            if (page === 0) {
+                const cached = cacheGet(searchKey);
+                if (cached) {
+                    show(buildWidget(new Set(cached.formats), cached.location ? [cached.location] : [], searchUrl));
+                    return;
+                }
+                show(buildLoading());
+            }
             GM_xmlhttpRequest({
                 method:  'GET',
                 url:     page ? `${searchUrl}&offset=${page * PAGE_SIZE}` : searchUrl,
@@ -597,6 +662,7 @@
                     if (formats.size || !more) {
                         show(buildWidget(formats, location ? [location] : [], searchUrl));
                     }
+                    if (!more) cacheSet(searchKey, { formats: [...formats], location });
                 },
                 onerror()   { searchFailed(page); },
                 ontimeout() { searchFailed(page); },
@@ -607,21 +673,33 @@
         // so there is nothing to match. They cover about three quarters of the
         // store's rentals, so a film they don't list may still be there under
         // a rental with no id: anything but a hit falls back to the search.
+        function answer(rentals) {
+            const held = Array.isArray(rentals) ? fromRentals(rentals) : null;
+            if (!held?.formats.size) { fetchPage(0); return; }
+            show(buildWidget(held.formats, held.locations, searchUrl, held.links));
+        }
+
+        // Only the film's own entry is cached, not the whole file.
         function fetchByTmdb(tmdb) {
+            const key = `tmdb:${tmdb.kind}/${tmdb.id}`;
+            const cached = cacheGet(key);
+            if (cached !== undefined) { answer(cached); return; }
+
             const shard = String(tmdb.id % API_SHARDS).padStart(3, '0');
             GM_xmlhttpRequest({
                 method:  'GET',
                 url:     `${API_BASE}/tmdb/${tmdb.kind}/${shard}.json`,
                 timeout: 8000,
                 onload(response) {
-                    let held;
+                    let rentals = null, ok = false;
                     try {
-                        const rentals = JSON.parse(response.responseText)[tmdb.id];
-                        if (Array.isArray(rentals)) held = fromRentals(rentals);
+                        if (response.status === 200) {
+                            rentals = JSON.parse(response.responseText)[tmdb.id] ?? null;
+                            ok = true;
+                        }
                     } catch (e) { /* not the file we expected */ }
-                    if (!held?.formats.size) { fetchPage(0); return; }
-
-                    show(buildWidget(held.formats, held.locations, searchUrl, held.links));
+                    if (ok) cacheSet(key, rentals);
+                    answer(rentals);
                 },
                 onerror()   { fetchPage(0); },
                 ontimeout() { fetchPage(0); },
